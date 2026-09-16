@@ -439,6 +439,117 @@ abstract mixin class _ComicPageActions {
     });
   }
 
+  /// Link this comic to an AniList entry, or manage an existing link.
+  ///
+  /// When the comic is not linked yet, AniList is searched by title. A
+  /// confident match is applied directly, anything else opens the picker.
+  void trackOnAniList() async {
+    if (!AniListManager().isLoggedIn) {
+      App.rootContext.showMessage(
+        message: "Connect your AniList account in settings first".tl,
+      );
+      return;
+    }
+
+    if (AniListManager().find(comic.sourceKey, comic.id) != null) {
+      await _showAniListPanel();
+      return;
+    }
+
+    var loadingController = showLoadingDialog(
+      App.rootContext,
+      barrierDismissible: false,
+      allowCancel: false,
+      message: "Searching on AniList...".tl,
+    );
+    List<AniListMedia> results;
+    try {
+      results = await AniListManager().search(comic.title);
+    } catch (e, s) {
+      loadingController.close();
+      Log.error("AniList", e.toString(), s);
+      App.rootContext.showMessage(message: e.toString());
+      return;
+    }
+    loadingController.close();
+
+    var match = AniListManager.bestMatch(comic.title, results);
+    if (match == null) {
+      // No confident match, let the user pick.
+      await _showAniListPanel();
+      return;
+    }
+
+    _linkToAniList(match);
+    var changeMatch = false;
+    await showDialog(
+      context: App.rootContext,
+      builder: (context) {
+        return ContentDialog(
+          title: "Linked to AniList".tl,
+          content: Text(
+            "This comic is now tracked as @name".tlParams({
+              "name": match.title,
+            }),
+          ).paddingHorizontal(16).paddingVertical(8),
+          actions: [
+            Button.normal(
+              onPressed: () {
+                changeMatch = true;
+                context.pop();
+              },
+              child: Text("Not this one".tl),
+            ),
+            Button.filled(
+              onPressed: () => context.pop(),
+              child: Text("OK".tl),
+            ),
+          ],
+        );
+      },
+    );
+    if (changeMatch) {
+      await _showAniListPanel();
+    }
+  }
+
+  void _linkToAniList(AniListMedia media) {
+    AniListManager().link(AniListLink(
+      sourceKey: comic.sourceKey,
+      comicId: comic.id,
+      mediaId: media.id,
+      title: media.title,
+      totalChapters: media.chapters,
+      createdAt: DateTime.now(),
+    ));
+    _pushCurrentProgressToAniList();
+    update();
+  }
+
+  /// Push the progress which was already reached before linking, so the
+  /// AniList entry does not wait for the next chapter to catch up.
+  void _pushCurrentProgressToAniList() {
+    var current = history;
+    if (current != null) {
+      AniListSyncService().syncHistory(current);
+    }
+  }
+
+  Future<void> _showAniListPanel() {
+    return showSideBar(
+      App.rootContext,
+      _AniListPanel(
+        sourceKey: comic.sourceKey,
+        comicId: comic.id,
+        initialSearch: comic.title,
+        onChanged: () {
+          _pushCurrentProgressToAniList();
+          update();
+        },
+      ),
+    );
+  }
+
   void onTapTag(String tag, String namespace) {
     var target = comicSource.handleClickTagEvent?.call(namespace, tag);
     var context = App.mainNavigatorKey!.currentContext!;
@@ -458,6 +569,13 @@ abstract mixin class _ComicPageActions {
             icon: Icons.picture_as_pdf_outlined,
             text: "Download as PDF".tl,
             onClick: downloadAsPdf,
+          ),
+          MenuEntry(
+            icon: Icons.sync_alt,
+            text: AniListManager().find(comic.sourceKey, comic.id) == null
+                ? "Track on AniList".tl
+                : "AniList tracking".tl,
+            onClick: trackOnAniList,
           ),
           MenuEntry(
             icon: Icons.copy,

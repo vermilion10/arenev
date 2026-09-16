@@ -8,6 +8,7 @@ import 'package:sliver_tools/sliver_tools.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera/components/components.dart';
 import 'package:venera/components/rich_comment_content.dart';
+import 'package:venera/foundation/anilist.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -42,6 +43,8 @@ part 'favorite.dart';
 part 'comments_preview.dart';
 
 part 'actions.dart';
+
+part 'anilist.dart';
 
 part 'cover_viewer.dart';
 
