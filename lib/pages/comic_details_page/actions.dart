@@ -295,6 +295,150 @@ abstract mixin class _ComicPageActions {
     update();
   }
 
+  /// Download the comic (or the selected chapters) directly into a single
+  /// pdf file. Images are streamed into a scratch directory in the cache and
+  /// removed afterwards, so nothing is added to the local comic library.
+  void downloadAsPdf() async {
+    List<String>? chapterIds;
+    if (comic.chapters != null) {
+      List<int>? selected;
+      await showSideBar(
+        App.rootContext,
+        _SelectDownloadChapter(
+          comic.chapters!.titles.toList(),
+          (v) => selected = v,
+          const [],
+        ),
+      );
+      if (selected == null || selected!.isEmpty) {
+        return;
+      }
+      chapterIds = selected!.map((i) {
+        return comic.chapters!.ids.elementAt(i);
+      }).toList();
+    }
+
+    var scratchDir = Directory(FilePath.join(
+      App.cachePath,
+      'pdf_direct_download',
+      sanitizeFileName(comic.id, maxLength: 64),
+    ));
+    var canceled = false;
+    var loadingController = showLoadingDialog(
+      App.rootContext,
+      barrierDismissible: false,
+      message: "Fetching image list...".tl,
+      withProgress: true,
+      onCancel: () {
+        canceled = true;
+      },
+    );
+
+    try {
+      scratchDir.forceCreateSync();
+
+      var pages = <({String chapter, String image})>[];
+      if (chapterIds == null) {
+        var images = await _loadPagesWithRetry(null);
+        pages.addAll(images.map((e) => (chapter: '', image: e)));
+      } else {
+        for (var i = 0; i < chapterIds.length; i++) {
+          if (canceled) return;
+          loadingController.setMessage(
+            "${"Fetching image list".tl} ${i + 1}/${chapterIds.length}",
+          );
+          var images = await _loadPagesWithRetry(chapterIds[i]);
+          pages.addAll(
+            images.map((e) => (chapter: chapterIds![i], image: e)),
+          );
+        }
+      }
+      if (canceled) return;
+      if (pages.isEmpty) {
+        throw "No images to download".tl;
+      }
+
+      var total = pages.length;
+      var imagePaths = List<String?>.filled(total, null);
+      var downloaded = 0;
+      loadingController.setMessage("$downloaded/$total");
+      loadingController.setProgress(0);
+
+      var maxConcurrentTasks =
+          (appdata.settings["downloadThreads"] as num).toInt();
+      if (maxConcurrentTasks < 1) {
+        maxConcurrentTasks = 1;
+      }
+      var next = 0;
+      Object? error;
+
+      Future<void> runWorker() async {
+        while (true) {
+          if (canceled || error != null) return;
+          var i = next++;
+          if (i >= total) return;
+          try {
+            imagePaths[i] = await _downloadImageToFile(
+              image: pages[i].image,
+              sourceKey: comicSource.key,
+              comicId: comic.id,
+              chapter: pages[i].chapter,
+              saveTo: scratchDir,
+              name: i.toString(),
+              isCanceled: () => canceled,
+            );
+          } catch (e) {
+            error ??= e;
+            return;
+          }
+          downloaded++;
+          loadingController.setMessage("$downloaded/$total");
+          loadingController.setProgress(downloaded / total);
+        }
+      }
+
+      await Future.wait(List.generate(
+        maxConcurrentTasks > total ? total : maxConcurrentTasks,
+        (_) => runWorker(),
+      ));
+
+      if (canceled) return;
+      if (error != null) {
+        throw error!;
+      }
+
+      loadingController.setProgress(null);
+      loadingController.setMessage("Generating pdf...".tl);
+      var fileName = "${sanitizeFileName(comic.title, maxLength: 100)}.pdf";
+      var pdfPath = FilePath.join(scratchDir.path, fileName);
+      await createPdfFromImagesIsolate(
+        imagePaths.map((e) => e!).toList(),
+        title: comic.title,
+        author: comic.subTitle ?? '',
+        savePath: pdfPath,
+      );
+      if (canceled) return;
+      loadingController.close();
+      await saveFile(file: File(pdfPath), filename: fileName);
+    } catch (e, s) {
+      Log.error("Download", e.toString(), s);
+      App.rootContext.showMessage(message: e.toString());
+    } finally {
+      loadingController.close();
+      await scratchDir.deleteIgnoreError(recursive: true);
+    }
+  }
+
+  Future<List<String>> _loadPagesWithRetry(String? chapter) {
+    return _runWithRetry(() async {
+      var res = await comicSource.loadComicPages!(comic.id, chapter);
+      if (res.error) {
+        throw res.errorMessage!;
+      }
+      return res.data;
+    });
+  }
+
   void onTapTag(String tag, String namespace) {
     var target = comicSource.handleClickTagEvent?.call(namespace, tag);
     var context = App.mainNavigatorKey!.currentContext!;
@@ -310,6 +454,11 @@ abstract mixin class _ComicPageActions {
           context.padding.top,
         ),
         [
+          MenuEntry(
+            icon: Icons.picture_as_pdf_outlined,
+            text: "Download as PDF".tl,
+            onClick: downloadAsPdf,
+          ),
           MenuEntry(
             icon: Icons.copy,
             text: "Copy Title".tl,
@@ -419,5 +568,64 @@ abstract mixin class _ComicPageActions {
         ),
       ),
     );
+  }
+}
+
+Future<T> _runWithRetry<T>(Future<T> Function() task, {int retry = 3}) async {
+  for (var i = 0; i < retry; i++) {
+    try {
+      return await task();
+    } catch (e) {
+      if (i == retry - 1) {
+        rethrow;
+      }
+      await Future.delayed(Duration(seconds: i + 1));
+    }
+  }
+  throw UnimplementedError();
+}
+
+/// Download a single comic image into [saveTo]. Retries the same number of
+/// times as the normal download task before giving up.
+Future<String> _downloadImageToFile({
+  required String image,
+  required String sourceKey,
+  required String comicId,
+  required String chapter,
+  required Directory saveTo,
+  required String name,
+  required bool Function() isCanceled,
+}) async {
+  var retry = 3;
+  while (true) {
+    try {
+      Uint8List? data;
+      await for (var progress in ImageDownloader.loadComicImageUnwrapped(
+          image, sourceKey, comicId, chapter)) {
+        if (isCanceled()) {
+          throw "Canceled";
+        }
+        if (progress.imageBytes != null) {
+          data = progress.imageBytes;
+        }
+      }
+      if (data == null) {
+        throw "Failed to download image".tl;
+      }
+      var fileType = detectFileType(data);
+      var file = saveTo.joinFile("$name${fileType.ext}");
+      await file.writeAsBytes(data);
+      return file.path;
+    } catch (e, st) {
+      if (isCanceled()) {
+        rethrow;
+      }
+      Log.error("Download", e.toString(), st);
+      retry--;
+      if (retry <= 0) {
+        rethrow;
+      }
+      await Future.delayed(Duration(seconds: 3 - retry));
+    }
   }
 }
