@@ -86,6 +86,7 @@ class Appdata with Init {
 
   /// Following fields are related to device-specific data and should not be synced.
   static const _disableSync = [
+    "anilistToken",
     "proxy",
     "authorizationRequired",
     "customImageProcessing",
@@ -237,6 +238,7 @@ class Settings with ChangeNotifier {
     'showChapterComments': true, // show chapter comments in reader
     'showChapterCommentsAtEnd':
         false, // show chapter comments at end of chapter
+    'anilistToken': '', // AniList access token. Empty means not connected.
   };
 
   operator [](String key) {

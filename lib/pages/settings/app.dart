@@ -141,6 +141,11 @@ class _AppSettingsState extends State<AppSettings> {
           actionTitle: 'Set'.tl,
         ).toSliver(),
         _SettingPartTitle(
+          title: "AniList".tl,
+          icon: Icons.sync_alt,
+        ),
+        const _AniListSettings().toSliver(),
+        _SettingPartTitle(
           title: "User".tl,
           icon: Icons.person_outline,
         ),

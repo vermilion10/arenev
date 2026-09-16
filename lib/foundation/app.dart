@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:venera/foundation/anilist.dart';
 import 'package:venera/foundation/history.dart';
 
 import 'appdata.dart';
@@ -63,6 +64,8 @@ class _App {
 
   final HistoryManager history = HistoryManager();
 
+  final AniListManager anilist = AniListManager();
+
   final LocalFavoritesManager favorites = LocalFavoritesManager();
 
   final LocalManager local = LocalManager();
@@ -94,7 +97,10 @@ class _App {
       history.init(),
       favorites.init(),
       local.init(),
+      anilist.init(),
     ]);
+    // Keep AniList progress up to date while the user is reading.
+    AniListSyncService().start();
   }
 
   Function? _forceRebuildHandler;
