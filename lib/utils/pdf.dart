@@ -10,12 +10,34 @@ import 'package:zip_flutter/zip_flutter.dart';
 
 typedef DecodeImage = Future<Image> Function(Uint8List data);
 
-Future<void> _createPdfFromComic({
-  required LocalComic comic,
-  required String savePath,
-  required String localPath,
-  required DecodeImage decodeImage,
-}) async {
+/// Describes a pdf generation job which is executed in a separate isolate.
+///
+/// Either [imagePaths] or [comic] must be provided. If [comic] is provided,
+/// the image paths are resolved inside the isolate.
+class _PdfJob {
+  final LocalComic? comic;
+
+  final String? localPath;
+
+  final List<String>? imagePaths;
+
+  final String title;
+
+  final String author;
+
+  final String savePath;
+
+  const _PdfJob({
+    this.comic,
+    this.localPath,
+    this.imagePaths,
+    required this.title,
+    required this.author,
+    required this.savePath,
+  });
+}
+
+List<String> _resolveComicImages(LocalComic comic, String localPath) {
   var images = <String>[];
 
   var baseDir = comic.directory.contains('/') || comic.directory.contains('\\')
@@ -59,19 +81,10 @@ Future<void> _createPdfFromComic({
     }
   }
 
-  var generator = PdfGenerator(
-    title: comic.title,
-    author: comic.subtitle,
-    imagePaths: images,
-    outputPath: savePath,
-    decodeImage: decodeImage,
-  );
-  await generator.generate();
+  return images;
 }
 
-Future<Isolate> _runIsolate(
-    LocalComic comic, String savePath, SendPort sendPort) {
-  var localPath = LocalManager().path;
+Future<Isolate> _runIsolate(_PdfJob job, SendPort sendPort) {
   return Isolate.spawn<SendPort>(
     (sendPort) => overrideIO(
       () async {
@@ -102,12 +115,17 @@ Future<Isolate> _runIsolate(
           }
         });
 
-        await _createPdfFromComic(
-          comic: comic,
-          savePath: savePath,
-          localPath: localPath,
+        var images = job.imagePaths ??
+            _resolveComicImages(job.comic!, job.localPath!);
+
+        var generator = PdfGenerator(
+          title: job.title,
+          author: job.author,
+          imagePaths: images,
+          outputPath: job.savePath,
           decodeImage: decodeImage,
         );
+        await generator.generate();
 
         sendPort.send(null);
       },
@@ -116,7 +134,7 @@ Future<Isolate> _runIsolate(
   );
 }
 
-Future<File> createPdfFromComicIsolate(LocalComic comic, String savePath) async {
+Future<File> _createPdfIsolate(_PdfJob job) async {
   var receivePort = ReceivePort();
   SendPort? sendPort;
   Isolate? isolate;
@@ -134,9 +152,35 @@ Future<File> createPdfFromComicIsolate(LocalComic comic, String savePath) async 
       isolate!.kill();
     }
   });
-  isolate = await _runIsolate(comic, savePath, receivePort.sendPort);
+  isolate = await _runIsolate(job, receivePort.sendPort);
   await completer.future;
-  return File(savePath);
+  return File(job.savePath);
+}
+
+/// Create a pdf file from a downloaded [LocalComic].
+Future<File> createPdfFromComicIsolate(LocalComic comic, String savePath) {
+  return _createPdfIsolate(_PdfJob(
+    comic: comic,
+    localPath: LocalManager().path,
+    title: comic.title,
+    author: comic.subtitle,
+    savePath: savePath,
+  ));
+}
+
+/// Create a pdf file from the given image files, in the given order.
+Future<File> createPdfFromImagesIsolate(
+  List<String> imagePaths, {
+  required String title,
+  required String author,
+  required String savePath,
+}) {
+  return _createPdfIsolate(_PdfJob(
+    imagePaths: imagePaths,
+    title: title,
+    author: author,
+    savePath: savePath,
+  ));
 }
 
 class PdfGenerator {
