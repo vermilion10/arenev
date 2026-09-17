@@ -17,8 +17,10 @@ jobs:
           architecture: x64
       - run: sudo xcode-select --switch /Applications/Xcode_16.4.app
       - run: flutter pub get
-        # Step 1: Decode and install the certificate
+      # Skipped when the signing secrets are not configured, for example on a
+      # fork. The resulting app is unsigned but the build still completes.
       - name: Decode and install certificate
+        if: env.CERTIFICATE != ''
         env:
           CERTIFICATE: ${{ secrets.CERTIFICATE }}
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -67,9 +69,9 @@ jobs:
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
       - run: |
-          mkdir -p /Users/runner/work/venera/venera/build/ios/iphoneos/Payload
-          mv /Users/runner/work/venera/venera/build/ios/iphoneos/Runner.app /Users/runner/work/venera/venera/build/ios/iphoneos/Payload
-          cd /Users/runner/work/venera/venera/build/ios/iphoneos/
+          cd "$GITHUB_WORKSPACE/build/ios/iphoneos"
+          mkdir -p Payload
+          mv Runner.app Payload/
           zip -r venera-ios.ipa Payload
       - name: Add version to filename
         run: |
@@ -90,7 +92,10 @@ jobs:
           channel: "stable"
           flutter-version-file: pubspec.yaml
           architecture: x64
+      # Without these secrets, for example on a fork, no key.properties is
+      # written and the release apk is signed with the debug key instead.
       - name: Decode and install certificate
+        if: env.STORE_FILE != '' && env.PROPERTY_FILE != ''
         env:
           STORE_FILE: ${{ secrets.ANDROID_KEYSTORE }}
           PROPERTY_FILE: ${{ secrets.ANDROID_KEY_PROPERTIES }}
